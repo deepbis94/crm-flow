@@ -1,0 +1,10 @@
+.DS_Store
+api/vendor
+api/node_modules
+api/.env
+api/.phpunit.cache
+api/storage/logs/*.log
+api/public/hot
+api/public/build
+worker/node_modules
+*.orig
