@@ -3,7 +3,6 @@
 use App\Enums\LeadState;
 use App\Models\CrmQueue;
 use App\Models\Lead;
-use App\Models\Source;
 use App\Models\User;
 use App\Services\ClaimService;
 use App\Services\LeadLock;
@@ -50,6 +49,20 @@ it('acquires a redis lock for only one claimer', function () {
         ->and($second)->toBeNull();
 });
 
+it('enforces per-agent concurrency under the claim mutex', function () {
+    $queue = CrmQueue::factory()->create(['max_concurrency_per_agent' => 1]);
+    $agent = User::factory()->create(['team_id' => $queue->team_id, 'max_concurrency' => 1]);
+    $first = Lead::factory()->create(['queue_id' => $queue->id, 'state' => LeadState::Queued, 'version' => 1]);
+    $second = Lead::factory()->create(['queue_id' => $queue->id, 'state' => LeadState::Queued, 'version' => 1]);
+
+    $claims = app(ClaimService::class);
+    $claims->claim($first, $agent);
+
+    expect(fn () => $claims->claim($second, $agent))
+        ->toThrow(\App\Exceptions\LeadAlreadyClaimedException::class)
+        ->and($second->fresh()->state)->toBe(LeadState::Queued);
+});
+
 it('returns a lead to the queue after the lock expires', function () {
     $queue = CrmQueue::factory()->create();
     $agent = User::factory()->create(['team_id' => $queue->team_id]);
@@ -60,6 +73,9 @@ it('returns a lead to the queue after the lock expires', function () {
     expect($claimed->state)->toBe(LeadState::Claimed);
 
     \Illuminate\Support\Facades\Redis::del(app(LeadLock::class)->key($lead->id));
+    $claimed->forceFill([
+        'claimed_at' => now()->subMilliseconds((int) config('crmflow.claim_lock_ttl_ms') + 1000),
+    ])->save();
 
     $released = $claims->releaseExpiredLocks();
 

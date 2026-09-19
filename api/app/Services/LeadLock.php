@@ -29,8 +29,40 @@ final class LeadLock
         return is_string($value) ? $value : null;
     }
 
+    public function acquireAgent(int|string $agentId, ?int $ttlMs = null): ?string
+    {
+        $token = (string) Str::uuid();
+        $ttl = $ttlMs ?? 5000;
+        $ok = Redis::set($this->agentKey($agentId), $token, 'PX', $ttl, 'NX');
+
+        return $ok ? $token : null;
+    }
+
+    public function waitForAgent(int|string $agentId, int $tries = 25, int $sleepMs = 20): ?string
+    {
+        for ($i = 0; $i < $tries; $i++) {
+            $token = $this->acquireAgent($agentId);
+            if ($token !== null) {
+                return $token;
+            }
+            usleep($sleepMs * 1000);
+        }
+
+        return null;
+    }
+
+    public function releaseAgent(int|string $agentId, string $token): bool
+    {
+        return (int) Lua::eval('lock_release', [$this->agentKey($agentId)], [$token]) === 1;
+    }
+
     public function key(string $leadId): string
     {
         return "lock:lead:{$leadId}";
+    }
+
+    public function agentKey(int|string $agentId): string
+    {
+        return "lock:agent:{$agentId}:claim";
     }
 }

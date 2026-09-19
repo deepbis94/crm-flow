@@ -67,3 +67,32 @@ it('does not apply the same payment status twice under optimistic locking', func
     expect($order->fresh()->version)->toBe(2)
         ->and($order->fresh()->payment_status)->toBe(PaymentStatus::Succeeded);
 });
+
+it('ignores out-of-order payment events that would regress status', function () {
+    $queue = CrmQueue::factory()->create();
+    $agent = User::factory()->create(['team_id' => $queue->team_id]);
+    $lead = Lead::factory()->create(['queue_id' => $queue->id, 'state' => LeadState::Queued, 'version' => 1]);
+    $claimed = app(ClaimService::class)->claim($lead, $agent);
+    $working = app(ClaimService::class)->startWorking($claimed, $agent);
+    $order = app(OrderHandoffService::class)->qualify($working, $agent, [
+        'sku' => 'starter-monthly',
+        'name' => 'Starter Monthly',
+        'amount_minor' => 4900,
+    ]);
+
+    $consumer = app(PaymentEventConsumer::class);
+    expect($consumer->ingest('checkouthub', 'evt_ok', 'payment.succeeded', $order->id)['applied'])->toBeTrue();
+
+    $lateFailure = $consumer->ingest('checkouthub', 'evt_late_fail', 'payment.failed', $order->id);
+    expect($lateFailure['applied'])->toBeFalse()
+        ->and($order->fresh()->payment_status)->toBe(PaymentStatus::Succeeded)
+        ->and($order->fresh()->version)->toBe(2);
+
+    $refund = $consumer->ingest('checkouthub', 'evt_refund', 'payment.refunded', $order->id);
+    expect($refund['applied'])->toBeTrue()
+        ->and($order->fresh()->payment_status)->toBe(PaymentStatus::Refunded);
+
+    $afterRefund = $consumer->ingest('checkouthub', 'evt_after_refund', 'payment.succeeded', $order->id);
+    expect($afterRefund['applied'])->toBeFalse()
+        ->and($order->fresh()->payment_status)->toBe(PaymentStatus::Refunded);
+});

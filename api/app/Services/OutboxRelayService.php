@@ -11,7 +11,13 @@ final class OutboxRelayService
     public function publishPending(int $limit = 50): int
     {
         $events = OutboxEvent::query()
-            ->where('status', OutboxStatus::Pending)
+            ->where(function ($query) {
+                $query->where('status', OutboxStatus::Pending)
+                    ->orWhere(function ($retry) {
+                        $retry->where('status', OutboxStatus::Failed)
+                            ->where('attempts', '<', 8);
+                    });
+            })
             ->orderBy('id')
             ->limit($limit)
             ->get();

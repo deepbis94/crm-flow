@@ -67,8 +67,8 @@ echo "Replay:"; curl -s -H "X-Webhook-Secret: $SECRET" -H "Content-Type: applica
 
 echo
 echo "== 4. Break a claim lock and show auto-release =="
-docker compose -f "$ROOT/docker-compose.yml" exec -T redis redis-cli KEYS 'crmflow_lock:lead:*' || true
+docker compose -f "$ROOT/docker-compose.yml" exec -T app php artisan tinker --execute="App\Models\Lead::query()->where('state', 'claimed')->update(['claimed_at' => now()->subHour()]);"
 echo "Deleting claim locks to simulate a crashed agent session..."
 docker compose -f "$ROOT/docker-compose.yml" exec -T redis redis-cli EVAL "for _,k in ipairs(redis.call('keys', 'crmflow_lock:lead:*')) do redis.call('del', k) end; return 1" 0
 docker compose -f "$ROOT/docker-compose.yml" exec -T app php artisan crmflow:release-expired
-echo "Done. Claimed leads whose Redis lock vanished are back in queued."
+echo "Done. Claimed leads older than the lock TTL whose Redis lock vanished are back in queued."

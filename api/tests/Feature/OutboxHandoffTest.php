@@ -8,6 +8,8 @@ use App\Models\OutboxEvent;
 use App\Models\User;
 use App\Services\ClaimService;
 use App\Services\OrderHandoffService;
+use App\Services\OutboxRelayService;
+use Illuminate\Support\Str;
 
 beforeEach(fn () => flushTestRedis());
 
@@ -31,4 +33,31 @@ it('writes the order and outbox event in the same transaction', function () {
         ->and($event->event_type)->toBe('order.created')
         ->and($event->status)->toBe(OutboxStatus::Pending)
         ->and($order->lead_snapshot['email'])->toBe($lead->email);
+});
+
+it('retries failed outbox events until they exhaust attempts', function () {
+    $pending = OutboxEvent::query()->create([
+        'event_id' => (string) Str::uuid(),
+        'aggregate_type' => 'order',
+        'aggregate_id' => (string) Str::uuid(),
+        'event_type' => 'order.created',
+        'payload' => ['retry' => true],
+        'status' => OutboxStatus::Failed,
+        'attempts' => 3,
+    ]);
+    OutboxEvent::query()->create([
+        'event_id' => (string) Str::uuid(),
+        'aggregate_type' => 'order',
+        'aggregate_id' => (string) Str::uuid(),
+        'event_type' => 'order.created',
+        'payload' => ['dead' => true],
+        'status' => OutboxStatus::Dead,
+        'attempts' => 8,
+    ]);
+
+    $published = app(OutboxRelayService::class)->publishPending();
+
+    expect($published)->toBe(1)
+        ->and($pending->fresh()->status)->toBe(OutboxStatus::Published)
+        ->and(OutboxEvent::query()->where('status', OutboxStatus::Dead)->count())->toBe(1);
 });

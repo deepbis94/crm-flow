@@ -25,41 +25,41 @@ final class ClaimService
             throw new LeadAlreadyClaimedException('Lead is not available to claim.');
         }
 
-        $queue = $lead->queue;
-        if ($queue) {
-            $open = Lead::query()
-                ->where('assigned_agent_id', $agent->id)
-                ->whereIn('state', [LeadState::Claimed->value, LeadState::Working->value])
-                ->count();
-            $cap = min($agent->max_concurrency, $queue->max_concurrency_per_agent);
-            if ($open >= $cap) {
-                throw new LeadAlreadyClaimedException('Agent is at max concurrency for this queue.');
-            }
-        }
-
-        $token = $this->locks->acquire($lead->id);
-        if ($token === null) {
-            throw new LeadAlreadyClaimedException('Lead is locked by another agent.');
+        $agentToken = $this->locks->waitForAgent($agent->id);
+        if ($agentToken === null) {
+            throw new LeadAlreadyClaimedException('Agent claim slot is busy.');
         }
 
         try {
-            $claimed = $this->states->transition(
-                $lead,
-                LeadState::Claimed,
-                'agent_claim',
-                $agent,
-                attributes: [
-                    'assigned_agent_id' => $agent->id,
-                    'claimed_at' => now(),
-                ],
-                meta: ['lock_token' => $token],
-            );
-        } catch (\Throwable $e) {
-            $this->locks->release($lead->id, $token);
-            throw $e;
-        }
+            $queue = $lead->queue;
+            if ($queue && $this->openLeadCount($agent) >= min($agent->max_concurrency, $queue->max_concurrency_per_agent)) {
+                throw new LeadAlreadyClaimedException('Agent is at max concurrency for this queue.');
+            }
 
-        return $claimed;
+            $token = $this->locks->acquire($lead->id);
+            if ($token === null) {
+                throw new LeadAlreadyClaimedException('Lead is locked by another agent.');
+            }
+
+            try {
+                return $this->states->transition(
+                    $lead,
+                    LeadState::Claimed,
+                    'agent_claim',
+                    $agent,
+                    attributes: [
+                        'assigned_agent_id' => $agent->id,
+                        'claimed_at' => now(),
+                    ],
+                    meta: ['lock_token' => $token],
+                );
+            } catch (\Throwable $e) {
+                $this->locks->release($lead->id, $token);
+                throw $e;
+            }
+        } finally {
+            $this->locks->releaseAgent($agent->id, $agentToken);
+        }
     }
 
     public function autoAssign(Lead $lead): ?Lead
@@ -124,26 +124,44 @@ final class ClaimService
 
     public function releaseExpiredLocks(): int
     {
-        $claimed = Lead::query()->where('state', LeadState::Claimed)->get();
+        $ttlMs = (int) config('crmflow.claim_lock_ttl_ms', 300000);
+        $cutoff = now()->subMilliseconds(max($ttlMs, 1));
         $released = 0;
 
-        foreach ($claimed as $lead) {
-            if ($this->locks->token($lead->id) !== null) {
-                continue;
-            }
+        Lead::query()
+            ->where('state', LeadState::Claimed)
+            ->where(function ($query) use ($cutoff) {
+                $query->whereNull('claimed_at')
+                    ->orWhere('claimed_at', '<=', $cutoff);
+            })
+            ->orderBy('id')
+            ->chunkById(100, function ($leads) use (&$released) {
+                foreach ($leads as $lead) {
+                    if ($this->locks->token($lead->id) !== null) {
+                        continue;
+                    }
 
-            $this->states->transition(
-                $lead,
-                LeadState::Queued,
-                'lock_expired',
-                attributes: [
-                    'assigned_agent_id' => null,
-                    'claimed_at' => null,
-                ],
-            );
-            $released++;
-        }
+                    $this->states->transition(
+                        $lead,
+                        LeadState::Queued,
+                        'lock_expired',
+                        attributes: [
+                            'assigned_agent_id' => null,
+                            'claimed_at' => null,
+                        ],
+                    );
+                    $released++;
+                }
+            });
 
         return $released;
+    }
+
+    private function openLeadCount(User $agent): int
+    {
+        return Lead::query()
+            ->where('assigned_agent_id', $agent->id)
+            ->whereIn('state', [LeadState::Claimed->value, LeadState::Working->value])
+            ->count();
     }
 }

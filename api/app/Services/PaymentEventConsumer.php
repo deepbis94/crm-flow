@@ -59,7 +59,14 @@ final class PaymentEventConsumer
             default => null,
         };
 
-        if ($target === null || $order->payment_status === $target) {
+        if ($target === null || ! $order->payment_status->canTransitionTo($target)) {
+            Log::info('payment_event_ignored', [
+                'order_id' => $order->id,
+                'from' => $order->payment_status->value,
+                'to' => $target?->value,
+                'type' => $type,
+            ]);
+
             return false;
         }
 

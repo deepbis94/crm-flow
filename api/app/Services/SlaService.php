@@ -68,6 +68,9 @@ final class SlaService
             'meta' => ['priority_before' => $lead->priority],
         ]);
 
+        // Single-worker sweep: this annotation is not version-gated. Agent
+        // state changes still go through LeadStateMachine; we only stamp
+        // sla_status/priority here before the re-queue transition.
         $lead->forceFill([
             'priority' => min(1000, $lead->priority + 200),
             'sla_status' => 'breached',
