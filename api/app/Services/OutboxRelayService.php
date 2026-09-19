@@ -41,7 +41,7 @@ final class OutboxRelayService
         $stream = (string) config('crmflow.streams.order_created');
 
         try {
-            Redis::xadd($stream, '*', [
+            $this->xadd($stream, [
                 'event_id' => $event->event_id,
                 'event_type' => $event->event_type,
                 'payload' => json_encode($event->payload, JSON_THROW_ON_ERROR),
@@ -122,5 +122,21 @@ final class OutboxRelayService
         }
 
         return $count;
+    }
+
+    /**
+     * Predis and PhpRedis disagree on XADD argument order.
+     * PhpRedis/Laravel: xadd(key, id, fields)
+     * Predis:           xadd(key, fields, id)
+     *
+     * @param  array<string, string>  $fields
+     */
+    private function xadd(string $stream, array $fields): mixed
+    {
+        if (config('database.redis.client') === 'predis') {
+            return Redis::xadd($stream, $fields, '*');
+        }
+
+        return Redis::xadd($stream, '*', $fields);
     }
 }
