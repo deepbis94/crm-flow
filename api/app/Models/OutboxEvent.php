@@ -15,6 +15,7 @@ class OutboxEvent extends Model
         'payload',
         'status',
         'attempts',
+        'next_attempt_at',
         'last_error',
         'published_at',
     ];
@@ -25,6 +26,7 @@ class OutboxEvent extends Model
             'payload' => 'array',
             'status' => OutboxStatus::class,
             'attempts' => 'integer',
+            'next_attempt_at' => 'datetime',
             'published_at' => 'datetime',
         ];
     }

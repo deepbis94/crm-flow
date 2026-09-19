@@ -61,3 +61,24 @@ it('retries failed outbox events until they exhaust attempts', function () {
         ->and($pending->fresh()->status)->toBe(OutboxStatus::Published)
         ->and(OutboxEvent::query()->where('status', OutboxStatus::Dead)->count())->toBe(1);
 });
+
+it('skips failed outbox events until next_attempt_at', function () {
+    $later = OutboxEvent::query()->create([
+        'event_id' => (string) Str::uuid(),
+        'aggregate_type' => 'order',
+        'aggregate_id' => (string) Str::uuid(),
+        'event_type' => 'order.created',
+        'payload' => ['backoff' => true],
+        'status' => OutboxStatus::Failed,
+        'attempts' => 2,
+        'next_attempt_at' => now()->addMinutes(5),
+    ]);
+
+    expect(app(OutboxRelayService::class)->publishPending())->toBe(0)
+        ->and($later->fresh()->status)->toBe(OutboxStatus::Failed);
+
+    $later->forceFill(['next_attempt_at' => now()->subSecond()])->save();
+
+    expect(app(OutboxRelayService::class)->publishPending())->toBe(1)
+        ->and($later->fresh()->status)->toBe(OutboxStatus::Published);
+});

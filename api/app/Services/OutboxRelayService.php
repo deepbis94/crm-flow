@@ -18,6 +18,10 @@ final class OutboxRelayService
                             ->where('attempts', '<', 8);
                     });
             })
+            ->where(function ($query) {
+                $query->whereNull('next_attempt_at')
+                    ->orWhere('next_attempt_at', '<=', now());
+            })
             ->orderBy('id')
             ->limit($limit)
             ->get();
@@ -46,6 +50,7 @@ final class OutboxRelayService
             $event->forceFill([
                 'status' => OutboxStatus::Published,
                 'published_at' => now(),
+                'next_attempt_at' => null,
                 'last_error' => null,
             ])->save();
 
@@ -56,6 +61,7 @@ final class OutboxRelayService
             $event->forceFill([
                 'attempts' => $attempts,
                 'status' => $dead ? OutboxStatus::Dead : OutboxStatus::Failed,
+                'next_attempt_at' => $dead ? null : now()->addSeconds(2 ** $attempts),
                 'last_error' => $e->getMessage(),
             ])->save();
 
@@ -82,7 +88,11 @@ final class OutboxRelayService
 
         $count = 0;
         foreach ($query->get() as $event) {
-            $event->forceFill(['status' => OutboxStatus::Pending, 'attempts' => 0])->save();
+            $event->forceFill([
+                'status' => OutboxStatus::Pending,
+                'attempts' => 0,
+                'next_attempt_at' => null,
+            ])->save();
             if ($this->publish($event->fresh())) {
                 $count++;
             }
@@ -100,7 +110,12 @@ final class OutboxRelayService
 
         $count = 0;
         foreach ($query->get() as $event) {
-            $event->forceFill(['status' => OutboxStatus::Pending, 'attempts' => 0, 'last_error' => null])->save();
+            $event->forceFill([
+                'status' => OutboxStatus::Pending,
+                'attempts' => 0,
+                'next_attempt_at' => null,
+                'last_error' => null,
+            ])->save();
             if ($this->publish($event->fresh())) {
                 $count++;
             }
